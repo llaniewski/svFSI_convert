@@ -2,17 +2,21 @@ library(reticulate)
 library(dplyr)
 library(Rcpp)
 
-setwd("~/jijo/svFSI_mesh_conversion_jijo/mesh_files_converted_with_openFOAM/")
+#  Set working directory:
+#setwd("~/jijo/svFSI_mesh_conversion_jijo/mesh_files_converted_with_openFOAM/")
 
-np = import('numpy')
+#  Import pyvista python module
 pyvista = import('pyvista')
 
+#  List of input files
 surface_meshes_fn = c("LUMEN_INLET/LUMEN_INLET.vtp", "LUMEN_OUTLET/LUMEN_OUTLET.vtp", "LUMEN_WALL/LUMEN_WALL.vtp")
 volume_meshes_fn = c("lumen.vtu")
 
 
 filenames = c(volume_meshes_fn, surface_meshes_fn)
 outnames = paste0("out/",filenames)
+
+# List of output files
 outnames = c(
   "mesh-complete/mesh-complete.mesh.vtu",
   "mesh-complete/mesh-surfaces/lumen_inlet.vtp",
@@ -20,18 +24,21 @@ outnames = c(
   "mesh-complete/mesh-surfaces/lumen_wall.vtp"
 )
 
+# Read meshes
 meshes = lapply(filenames, pyvista$read)
+
+# Indexes of the volume and surface meshes
 volume_sel  = seq_along( volume_meshes_fn)
 surface_sel = seq_along(surface_meshes_fn) + length(volume_meshes_fn)
 all_sel = seq_along(meshes)
 
+# Some helper vectors
 n_points = sapply(meshes, function(m) m$n_points)
 g_points_offset = c(0,cumsum(n_points))
-
 n_cells = sapply(meshes, function(m) m$n_cells)
 g_cells_offset = c(0,cumsum(n_cells))
 
-
+# This part constructs a big table of points and assignes them unique ids
 points = lapply(meshes, function(m) m$points)
 points = do.call(rbind,points)
 points = data.frame(points)
@@ -43,12 +50,16 @@ nid = rep(NA, nrow(points))
 nid[refs] = seq_along(refs)
 points$ref = nid[points$ref]
 
+# Assignes these ids (in "ref" column) to GlobalNodeID field in meshes
 for (i in all_sel) {
   meshes[[i]]$point_data$set_array(name="GlobalNodeID", points$ref[g_points_offset[i] + seq_len(n_points[i])])
 }
 
 # Now the hardest part
 
+# This part gets cells from volume meshes and faces from surface meshes as arrays
+#  the first column of the arrays are the number of points in respective cells/faces
+#  eg. [3 10 11 12 0 0] means a 3 point cell (triangle) with vertex indexes 10, 11, 12
 cells = lapply(volume_sel,function(i) {
   ind = meshes[[i]]$cells
   pad = length(ind) / meshes[[i]]$n_cells
@@ -73,9 +84,9 @@ faces = lapply(surface_sel,function(i) {
 })
 faces = do.call(rbind, faces)
 
-dim(cells)
-dim(faces)
 
+# This implements an efficient method to find which faces (in the surfaces) are parts of which cells (of the volume mesh)
+#  Rcpp is used, as otherwise this would be very slow
 cppFunction('List find_cells(IntegerMatrix faces, IntegerMatrix cells) {
   List ret(faces.nrow());
   std::map<int, std::set<int> > points_in_cell;
@@ -105,23 +116,25 @@ if (any(sapply(ret,length)!= 1)) stop("Some surface faces matched more than one 
 
 fc = simplify2array(ret) + 1  # +1 to go from C indexing to R/fortran indexing
 
+# Make a list with ids and region id's for the cells and faces
 elements = data.frame(id = 1:nrow(cells), region = rep(volume_sel, times=n_cells[volume_sel]))
 elements = rbind(elements,elements[fc,])
-
 if (nrow(elements) != nrow(cells)+nrow(faces)) stop("Something went wrong")
 
+# Assign the ids to the GlobalElementID and ModelRegionID fields in meshes
 for (i in all_sel) {
   sel = g_cells_offset[i] + seq_len(n_cells[i])
   meshes[[i]]$cell_data$set_array(name="GlobalElementID", elements$id[sel])
   meshes[[i]]$cell_data$set_array(name="ModelRegionID", elements$region[sel])
 }
 
+# Writing the meshes back to the files
 for (i in all_sel) {
   fn = outnames[i]
   p = dirname(fn)
   if (!dir.exists(p)) dir.create(p,recursive = TRUE)
   cat("Writing",fn,"\n")
-  # meshes[[i]]$save(fn)  # this would be normaly valid, but does not support "append" mode
+  # meshes[[i]]$save(fn)  # this would be normally do, but does not support "append" mode
   ext = paste0(".", tools::file_ext(fn))
   writer = meshes[[i]]$'_WRITERS'[[ext]]()
   writer$SetDataModeToAppended()
