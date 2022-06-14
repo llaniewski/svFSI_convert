@@ -3,15 +3,16 @@ library(dplyr)
 library(Rcpp)
 
 #  Set working directory:
-#setwd("~/jijo/svFSI_mesh_conversion_jijo/mesh_files_converted_with_openFOAM/")
+setwd("~/jijo/unstructured_mesh/VTK_lumen/")
 
 #  Import pyvista python module
 pyvista = import('pyvista')
 
 #  List of input files
-surface_meshes_fn = c("LUMEN_INLET/LUMEN_INLET.vtp", "LUMEN_OUTLET/LUMEN_OUTLET.vtp", "LUMEN_WALL/LUMEN_WALL.vtp")
+surface_meshes_fn = c("LUMEN_INLET/lumen_inlet.vtp", "LUMEN_OUTLET/lumen_outlet.vtp", "LUMEN_WALL/lumen_wall.vtp")
 volume_meshes_fn = c("lumen.vtu")
 
+region_id = 1
 
 filenames = c(volume_meshes_fn, surface_meshes_fn)
 outnames = paste0("out/",filenames)
@@ -71,72 +72,73 @@ do.rbind.fillzero = function(x) {
 # This part gets cells from volume meshes and faces from surface meshes as arrays
 #  the first column of the arrays are the number of points in respective cells/faces
 #  eg. [3 10 11 12 0 0] means a 3 point cell (triangle) with vertex indexes 10, 11, 12
-cells = lapply(volume_sel,function(i) {
-  ind = meshes[[i]]$cells
-  pad = length(ind) / meshes[[i]]$n_cells
-  ind = matrix(ind,ncol=pad,byrow = TRUE)
-  for (j in 1:max(ind[,1])) {
-    sel = j <= ind[,1]
-    ind[sel,j+1] = points$ref[ind[sel,j+1]+1+g_points_offset[i]]
-  }
-  ind
-})
-cells = do.rbind.fillzero(cells)
-
-faces = lapply(surface_sel,function(i) {
-  ind = meshes[[i]]$faces
-  pad = length(ind)/meshes[[i]]$n_faces
-  ind = matrix(ind,ncol=pad,byrow = TRUE)
-  for (j in 1:max(ind[,1])) {
-    sel = j <= ind[,1]
-    ind[sel,j+1] = points$ref[ind[sel,j+1]+1+g_points_offset[i]]
-  }
-  ind
-})
-faces = do.rbind.fillzero(faces)
-
+cells = lapply( volume_sel, function(i) list(meshes[[i]]$n_cells, meshes[[i]]$cells, points$ref[(1+g_points_offset[i]):g_points_offset[i+1]]))
+faces = lapply(surface_sel, function(i) list(meshes[[i]]$n_faces, meshes[[i]]$faces, points$ref[(1+g_points_offset[i]):g_points_offset[i+1]]))
 
 # This implements an efficient method to find which faces (in the surfaces) are parts of which cells (of the volume mesh)
 #  Rcpp is used, as otherwise this would be very slow
-cppFunction('List find_cells(IntegerMatrix faces, IntegerMatrix cells) {
-  List ret(faces.nrow());
+cppFunction('List find_cells(List faces, List cells) {
+  List ret(cells.length() + faces.length());
   std::map<int, std::set<int> > points_in_cell;
   Rprintf("Constructing maps ...\\n");
-  for (int i=0; i<cells.nrow(); i++) {
-    for (int j=0; j<cells(i,0); j++) {
-      points_in_cell[cells(i,1+j)].emplace(i);
+  int celloffset=0;
+  for (int m=0; m < cells.length(); m++) {
+    List mesh = cells(m);
+    int n_cells = mesh(0);
+    IntegerVector tab = mesh(1);
+    IntegerVector ref = mesh(2);
+    IntegerVector cellids(n_cells);
+    int cellidx = 0;
+    for (int i=0; i < tab.length(); i += tab(i) + 1) {
+      for (int j=0; j < tab(i); j++) {
+        points_in_cell[ref(tab(i+j+1))].emplace(cellidx);
+      }
+      assert(cellidx < n_cells);
+      cellids(cellidx) = cellidx + celloffset;
+      cellidx++;
     }
+    assert(cellidx == n_cells);
+    ret(m) = cellids;
+    celloffset += n_cells;
   }
   Rprintf("Inspecting maps ...\\n");
-  for (int i=0; i<faces.nrow(); i++) {
-    std::map<int, int> fc;
-    for (int j=0; j<faces(i,0); j++) {
-      std::set<int> c = points_in_cell[faces(i,1+j)];
-      for (auto k : c) fc[k]++;
+  for (int m=0; m < faces.length(); m++) {
+    List mesh = faces(m);
+    int n_faces = mesh(0);
+    IntegerVector tab = mesh(1);
+    IntegerVector ref = mesh(2);
+    List cellids(n_faces);
+    int faceidx = 0;
+    for (int i=0; i < tab.length(); i += tab(i) + 1) {
+      std::map<int, int> fc;
+      for (int j=0; j < tab(i); j++) {
+        std::set<int> c = points_in_cell[ref(tab(i+j+1))];
+        for (auto k : c) fc[k]++;
+      }
+      std::vector<int> fi;
+      for (auto k : fc) if (k.second == tab(i)) fi.push_back(k.first);
+      assert(faceidx < n_faces);
+      cellids(faceidx) = fi;
+      faceidx++;
     }
-    std::vector<int> fi;
-    for (auto k : fc) if (k.second == faces(i,0)) fi.push_back(k.first);
-    ret[i] = fi;
+    assert(cellidx == n_cells);
+    ret(m + cells.length()) = cellids;
   }
   Rprintf("List ready\\n");
   return ret;
 }')
 ret = find_cells(faces, cells)
 
-if (any(sapply(ret,length)!= 1)) stop("Some surface faces matched more than one volume cell")
+matches_one = sapply(surface_sel, function(i) all(sapply(ret[[i]],length) == 1))
+if (!all(matches_one)) stop("Some surface faces matched more than one volume cell")
 
-fc = simplify2array(ret) + 1  # +1 to go from C indexing to R/fortran indexing
-
-# Make a list with ids and region id's for the cells and faces
-elements = data.frame(id = 1:nrow(cells), region = rep(volume_sel, times=n_cells[volume_sel]))
-elements = rbind(elements,elements[fc,])
-if (nrow(elements) != nrow(cells)+nrow(faces)) stop("Something went wrong")
+fc = do.call(c, lapply(ret, simplify2array)) + 1
 
 # Assign the ids to the GlobalElementID and ModelRegionID fields in meshes
 for (i in all_sel) {
   sel = g_cells_offset[i] + seq_len(n_cells[i])
-  meshes[[i]]$cell_data$set_array(name="GlobalElementID", elements$id[sel])
-  meshes[[i]]$cell_data$set_array(name="ModelRegionID", elements$region[sel])
+  meshes[[i]]$cell_data$set_array(name="GlobalElementID", fc[sel])
+  meshes[[i]]$cell_data$set_array(name="ModelRegionID", region_id)
 }
 
 # Writing the meshes back to the files
