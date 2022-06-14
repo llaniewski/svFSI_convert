@@ -68,17 +68,15 @@ do.rbind.fillzero = function(x) {
   }))
 }
 
-# This part gets cells from volume meshes and faces from surface meshes as arrays
-#  the first column of the arrays are the number of points in respective cells/faces
-#  eg. [3 10 11 12 0 0] means a 3 point cell (triangle) with vertex indexes 10, 11, 12
+# This part gets cells from volume meshes and faces from surface meshes as vectors
 cells = lapply( volume_sel, function(i) list(meshes[[i]]$n_cells, meshes[[i]]$cells, points$ref[(1+g_points_offset[i]):g_points_offset[i+1]]))
 faces = lapply(surface_sel, function(i) list(meshes[[i]]$n_faces, meshes[[i]]$faces, points$ref[(1+g_points_offset[i]):g_points_offset[i+1]]))
 
 # This implements an efficient method to find which faces (in the surfaces) are parts of which cells (of the volume mesh)
 #  Rcpp is used, as otherwise this would be very slow
 cppFunction('List find_cells(List faces, List cells) {
-  List ret(cells.length() + faces.length());
-  std::map<int, std::set<int> > points_in_cell;
+  List ret(cells.length() + faces.length());            // Allocating list to be returned
+  std::map<int, std::set<int> > points_in_cell;         // Map stores in which volume cells a point is
   Rprintf("Constructing maps ...\\n");
   int celloffset=0;
   for (int m=0; m < cells.length(); m++) {
@@ -109,12 +107,12 @@ cppFunction('List find_cells(List faces, List cells) {
     List cellids(n_faces);
     int faceidx = 0;
     for (int i=0; i < tab.length(); i += tab(i) + 1) {
-      std::map<int, int> fc;
+      std::map<int, int> fc;                          // Map stores in which volume cell, our face have points
       for (int j=0; j < tab(i); j++) {
         std::set<int> c = points_in_cell[ref(tab(i+j+1))];
         for (auto k : c) fc[k]++;
       }
-      std::vector<int> fi;
+      std::vector<int> fi;                            // Collect in a vector all volume cells which have all the points of a face
       for (auto k : fc) if (k.second == tab(i)) fi.push_back(k.first);
       assert(faceidx < n_faces);
       cellids(faceidx) = fi;
