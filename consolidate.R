@@ -2,27 +2,26 @@ library(reticulate)
 library(dplyr)
 library(Rcpp)
 
-#  Set working directory:
-setwd("~/jijo/unstructured_mesh/VTK_lumen/")
-
 #  Import pyvista python module
 pyvista = import('pyvista')
 
-#  List of input files
+# LUMEN case
+setwd("~/jijo/unstructured_mesh/VTK_lumen/")
 surface_meshes_fn = c("LUMEN_INLET/lumen_inlet.vtp", "LUMEN_OUTLET/lumen_outlet.vtp", "LUMEN_WALL/lumen_wall.vtp")
 volume_meshes_fn = c("lumen.vtu")
 
-region_id = 1
+# WALL case
+setwd("~/jijo/unstructured_mesh/VTK_wall/")
+surface_meshes_fn = c("WALL_INLET/wall_inlet.vtp", "WALL_INNER/wall_inner.vtp", "WALL_OUTER/wall_outer.vtp", "WALL_OUTLET/wall_outlet.vtp")
+volume_meshes_fn = c("wall.vtu")
 
+region_id = 1
 filenames = c(volume_meshes_fn, surface_meshes_fn)
-outnames = paste0("out/",filenames)
 
 # List of output files
 outnames = c(
   "mesh-complete/mesh-complete.mesh.vtu",
-  "mesh-complete/mesh-surfaces/lumen_inlet.vtp",
-  "mesh-complete/mesh-surfaces/lumen_outlet.vtp",
-  "mesh-complete/mesh-surfaces/lumen_wall.vtp"
+  paste0("mesh-complete/mesh-surfaces/",basename(surface_meshes_fn))
 )
 
 # Read meshes
