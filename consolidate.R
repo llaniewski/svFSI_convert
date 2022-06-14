@@ -57,6 +57,17 @@ for (i in all_sel) {
 
 # Now the hardest part
 
+do.rbind.fillzero = function(x) {
+  n = max(sapply(x,ncol))
+  do.call(rbind, lapply(x, function(tab) {
+    if (ncol(tab) < n) {
+      cbind(tab, matrix(0,nrow(tab),n-ncol(tab)))
+    } else {
+      tab
+    }
+  }))
+}
+
 # This part gets cells from volume meshes and faces from surface meshes as arrays
 #  the first column of the arrays are the number of points in respective cells/faces
 #  eg. [3 10 11 12 0 0] means a 3 point cell (triangle) with vertex indexes 10, 11, 12
@@ -70,7 +81,7 @@ cells = lapply(volume_sel,function(i) {
   }
   ind
 })
-cells = do.call(rbind, cells)
+cells = do.rbind.fillzero(cells)
 
 faces = lapply(surface_sel,function(i) {
   ind = meshes[[i]]$faces
@@ -82,7 +93,7 @@ faces = lapply(surface_sel,function(i) {
   }
   ind
 })
-faces = do.call(rbind, faces)
+faces = do.rbind.fillzero(faces)
 
 
 # This implements an efficient method to find which faces (in the surfaces) are parts of which cells (of the volume mesh)
